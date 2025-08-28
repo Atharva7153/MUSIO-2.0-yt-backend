@@ -44,6 +44,11 @@ function getYouTubeId(url) {
   return match && match[1].length === 11 ? match[1] : null;
 }
 
+app.get("/health", (req, res) => {
+  res.json({ status: "awake" });
+});
+
+
 // Route: Download from YouTube & upload to Cloudinary + Mongo
 app.post("/yt-upload", async (req, res) => {
   try {
