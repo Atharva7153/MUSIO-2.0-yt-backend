@@ -37,6 +37,10 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+app.get("/", (req, res)=>{
+  res.send("<h1>Welcome to MUSIO backend</h1>");
+})
+
 app.get("/health", (req, res) => {
   res.json({ status: "awake" });
 });
