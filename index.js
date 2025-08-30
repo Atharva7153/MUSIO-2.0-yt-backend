@@ -59,7 +59,7 @@ app.post("/sc-upload", async (req, res) => {
 
       const cleanUrl = url.split("?")[0];
 
-      const clientId = scdl.getClientID()
+      const clientId = "OeDHpok8199e6vW8pnF7SljVEa4tYz6z"
       const stream = await scdl.download(cleanUrl, clientId);
       await new Promise((resolve, reject) => {
         const writeStream = fs.createWriteStream(filePath);
