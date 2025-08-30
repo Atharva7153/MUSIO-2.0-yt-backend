@@ -1,4 +1,4 @@
-// yt-server/index.js
+// sc-server/index.js
 import express from "express";
 import cors from "cors";
 import { v2 as cloudinary } from "cloudinary";
@@ -9,9 +9,10 @@ import mongoose from "mongoose";
 import Playlist from "./models/Playlist.js";
 import Song from "./models/Song.js";
 import dotenv from "dotenv";
-import ytdlp from "yt-dlp-exec"; // ✅ yt-dlp
+import scdlModule from "soundcloud-downloader";
 
 dotenv.config();
+const scdl = scdlModule.default || scdlModule; // ✅ Fix for ESM
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +27,7 @@ mongoose.connect(process.env.MONGO_URI, {
   useUnifiedTopology: true,
 });
 mongoose.connection.on("connected", () =>
-  console.log("MongoDB connected (yt-server)")
+  console.log("MongoDB connected (sc-server)")
 );
 
 // Cloudinary config
@@ -36,62 +37,49 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Helper: extract YouTube video ID
-function getYouTubeId(url) {
-  const regExp =
-    /^.*(?:youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
-  const match = url.match(regExp);
-  return match && match[1].length === 11 ? match[1] : null;
-}
-
 app.get("/health", (req, res) => {
   res.json({ status: "awake" });
 });
 
-
-// Route: Download from YouTube & upload to Cloudinary + Mongo
-app.post("/yt-upload", async (req, res) => {
+// --- Route: Download from SoundCloud & upload to Cloudinary + Mongo ---
+app.post("/sc-upload", async (req, res) => {
   try {
     const { url, title, artist, playlistId, newPlaylistName } = req.body;
-    console.log("Data Recieved", url, title, artist, playlistId, newPlaylistName);
+    console.log("Data Received", url, title, artist, playlistId, newPlaylistName);
 
     if (!url || !title) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Save file with correct extension
-    const outputFile = path.join(__dirname, `song-${Date.now()}.%(ext)s`);
+    // Temp file path
+    const filePath = path.join(__dirname, `sc-song-${Date.now()}.mp3`);
 
     try {
-      // ✅ Download best audio directly, no ffmpeg, no conversion
-      await ytdlp(url, {
-        format: "bestaudio/best",
-        output: outputFile,
+      // ✅ Download SoundCloud audio 
+      const stream = await scdl.download(url);
+      await new Promise((resolve, reject) => {
+        const writeStream = fs.createWriteStream(filePath);
+        stream.pipe(writeStream);
+        stream.on("error", reject);
+        writeStream.on("finish", resolve);
       });
 
-      // Figure out actual filename (replace %(ext)s with detected extension)
-      const files = fs.readdirSync(__dirname);
-      const downloadedFile = files.find(f => f.startsWith("song-") && (f.endsWith(".webm") || f.endsWith(".m4a")));
-      if (!downloadedFile) {
-        return res.status(500).json({ error: "Download failed, no file found" });
-      }
-
-      const fullPath = path.join(__dirname, downloadedFile);
-
       // ✅ Upload to Cloudinary
-      const uploadRes = await cloudinary.uploader.upload(fullPath, {
+      const uploadRes = await cloudinary.uploader.upload(filePath, {
         resource_type: "video", // Cloudinary treats audio as video
         folder: "songs",
       });
 
-      // Delete local file
-      fs.unlinkSync(fullPath);
+      // Delete local temp file
+      fs.unlinkSync(filePath);
 
-      // --- Auto Thumbnail from YouTube ---
+      // --- Cover Image from SoundCloud metadata ---
       let coverImage = "";
-      const ytId = getYouTubeId(url);
-      if (ytId) {
-        coverImage = `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg`;
+      try {
+        const info = await scdl.getInfo(url);
+        coverImage = info?.artwork_url || info?.user?.avatar_url || "";
+      } catch (metaErr) {
+        console.warn("Could not fetch SoundCloud metadata:", metaErr);
       }
 
       // Save song in DB
@@ -124,7 +112,7 @@ app.post("/yt-upload", async (req, res) => {
         playlist,
       });
     } catch (downloadErr) {
-      console.error("yt-dlp-exec error:", downloadErr);
+      console.error("SoundCloud download error:", downloadErr);
       res.status(500).json({ error: "Download failed" });
     }
   } catch (e) {
@@ -135,5 +123,5 @@ app.post("/yt-upload", async (req, res) => {
 
 const PORT = 4000;
 app.listen(PORT, () =>
-  console.log(`YT Upload Server running on http://localhost:${PORT}`)
+  console.log(`SC Upload Server running on http://localhost:${PORT}`)
 );
