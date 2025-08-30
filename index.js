@@ -56,7 +56,11 @@ app.post("/sc-upload", async (req, res) => {
 
     try {
       // ✅ Download SoundCloud audio 
-      const stream = await scdl.download(url);
+
+      const cleanUrl = url.split("?")[0];
+
+      const clientId = scdl.getClientID()
+      const stream = await scdl.download(cleanUrl, clientId);
       await new Promise((resolve, reject) => {
         const writeStream = fs.createWriteStream(filePath);
         stream.pipe(writeStream);
