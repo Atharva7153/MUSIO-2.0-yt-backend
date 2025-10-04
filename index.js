@@ -66,15 +66,45 @@ app.post("/yt-upload", async (req, res) => {
 
     // 🔹 Step 2: Download audio (with cookies if provided)
     const filePath = path.join(__dirname, `yt-song-${Date.now()}.webm`);
-    const ytArgs = {
-      output: filePath,
-      format: "bestaudio",
-      cookies: process.env.YT_COOKIES_PATH || undefined, // ✅ added
-    };
 
-    console.log("Downloading with yt-dlp...");
-    await ytdlp(url, ytArgs);
-    console.log("Download complete:", filePath);
+    // resilient download: try a sequence of formats and flags that help on Render
+    const downloadOptionsList = [
+      // preferred: best audio
+      { output: filePath, format: "bestaudio", cookies: process.env.YT_COOKIES_PATH || undefined },
+      // fallback: bestaudio with ffmpeg conversion to webm container
+      { output: filePath, format: "bestaudio[ext=webm]/bestaudio/best", cookies: process.env.YT_COOKIES_PATH || undefined },
+      // last resort: allow unplayable/formats and no-playlist
+      { output: filePath, format: "bestaudio/best", allow_unplayable_formats: true, no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
+    ];
+
+    console.log("Downloading with yt-dlp (resilient mode)...");
+    let downloaded = false;
+    let lastError = null;
+
+    for (const opts of downloadOptionsList) {
+      try {
+        // build args for yt-dlp-exec; pass unknown boolean flags as true
+        const execOpts = { ...opts };
+        // log which format we're trying
+        console.log("Trying yt-dlp with format:", execOpts.format || "default");
+        await ytdlp(url, execOpts);
+        if (fs.existsSync(filePath)) {
+          console.log("Download complete:", filePath);
+          downloaded = true;
+          break;
+        }
+      } catch (err) {
+        lastError = err;
+        console.error("yt-dlp attempt failed:", err && err.stderr ? err.stderr : err);
+        // clean up partial file if present
+        try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { }
+      }
+    }
+
+    if (!downloaded) {
+      // rethrow the last error so outer catch handles response
+      throw lastError || new Error("yt-dlp failed for unknown reason");
+    }
 
     // 🔹 Step 3: Upload audio to Cloudinary
     const uploadRes = await cloudinary.uploader.upload(filePath, {
