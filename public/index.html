@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MUSIO Backend UI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <div class="logo">MUSIO</div>
+        <div class="subtitle">YouTube → Cloudinary • Manage uploads</div>
+      </header>
+
+      <main class="content">
+        <section class="panel main-panel">
+          <h2 class="panel-title">Upload a YouTube track</h2>
+          <p class="lead">Paste a YouTube URL, set a title, and optionally assign or create a playlist.</p>
+
+          <form id="uploadForm" class="form clean">
+            <label class="field">
+              <div class="field-label">Video URL</div>
+              <input type="text" name="url" id="url" placeholder="https://www.youtube.com/watch?v=..." required autocomplete="off" />
+            </label>
+
+            <label class="field">
+              <div class="field-label">Title</div>
+              <input type="text" name="title" id="title" placeholder="Song title" required autocomplete="off" />
+            </label>
+
+            <div class="row two-cols">
+              <label class="field small">
+                <div class="field-label">Artist</div>
+                <input type="text" name="artist" id="artist" placeholder="Artist (optional)" autocomplete="off" />
+              </label>
+              <label class="field small">
+                <div class="field-label">Playlist ID</div>
+                <input type="text" name="playlistId" id="playlistId" placeholder="Optional playlist id" autocomplete="off" />
+              </label>
+            </div>
+
+            <label class="field">
+              <div class="field-label">New playlist name</div>
+              <input type="text" name="newPlaylistName" id="newPlaylistName" placeholder="Create new playlist instead" autocomplete="off" />
+            </label>
+
+            <div class="actions">
+              <button type="submit" class="btn primary" id="uploadBtn">Start upload</button>
+              <div id="uploadStatus" class="status small muted">Idle</div>
+            </div>
+          </form>
+
+          <div class="progress-wrap">
+            <div class="progress" id="uploadProgress"><div class="bar"></div></div>
+          </div>
+
+          <section class="result-panel">
+            <h3 class="result-title">Result</h3>
+            <pre id="uploadResult" class="result"></pre>
+          </section>
+        </section>
+
+        <aside class="panel side-panel">
+          <section class="block">
+            <h4>Cookie expiry</h4>
+            <button id="checkCookie" class="btn">Check cookie expiry</button>
+            <pre id="cookieResult" class="result small"></pre>
+          </section>
+
+          <section class="block">
+            <h4>Playlists</h4>
+            <div class="row"><button id="listPlaylists" class="btn">Refresh</button></div>
+            <ul id="playlists" class="playlist-list"></ul>
+          </section>
+        </aside>
+      </main>
+
+      <footer class="footer">Local use • Keep your keys secret</footer>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

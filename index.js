@@ -19,6 +19,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Serve minimal UI from public/
+app.use(express.static(path.join(__dirname, "public")));
 
 // --- MongoDB connection ---
 mongoose.connect(process.env.MONGO_URI, {
@@ -42,6 +44,22 @@ app.get("/", (req, res) => {
 
 app.get("/health", (req, res) => {
   res.json({ status: "awake" });
+});
+
+// UI landing page (static)
+app.get('/ui', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Read-only helper for UI: list playlists (no mutation)
+app.get('/playlists', async (req, res) => {
+  try {
+    const lists = await Playlist.find().populate('songs').lean();
+    res.json(lists);
+  } catch (e) {
+    console.error('Failed to list playlists for UI', e);
+    res.status(500).json({ error: 'Failed to list playlists' });
+  }
 });
 
 // --- Route: Download from YouTube & upload to Cloudinary + Mongo ---
