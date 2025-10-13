@@ -124,14 +124,40 @@ app.post("/yt-upload", async (req, res) => {
       throw lastError || new Error("yt-dlp failed for unknown reason");
     }
 
-    // 🔹 Step 3: Upload audio to Cloudinary
-    const uploadRes = await cloudinary.uploader.upload(filePath, {
-      resource_type: "video",
-      folder: "songs",
-    });
+    // 🔹 Step 3: Upload audio to Cloudinary (resilient - fallback to chunked upload_large on 413)
+    let uploadRes;
+    try {
+      const stats = fs.statSync(filePath);
+      console.log(`Uploading file to Cloudinary: ${filePath} (${stats.size} bytes)`);
 
-    // Clean up temp file
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      try {
+        uploadRes = await cloudinary.uploader.upload(filePath, {
+          resource_type: "video",
+          folder: "songs",
+        });
+      } catch (uploadErr) {
+        // Detect 413 (Request Entity Too Large) or UnexpectedResponse with http_code 413
+        const code = uploadErr && (uploadErr.http_code || (uploadErr.statusCode || uploadErr.status));
+        const is413 = code === 413 || (uploadErr && typeof uploadErr === 'object' && JSON.stringify(uploadErr).includes('413'));
+        console.error('Cloudinary upload failed:', uploadErr && (uploadErr.message || uploadErr));
+
+        if (is413) {
+          console.log('Detected 413 - retrying with chunked upload_large (recommended for big files)');
+          // upload_large will perform a chunked multipart upload which works around request size limits
+          uploadRes = await cloudinary.uploader.upload_large(filePath, {
+            resource_type: "video",
+            folder: "songs",
+            // chunk_size in bytes - 10 MB is a reasonable default for large uploads
+            chunk_size: 10 * 1024 * 1024,
+          });
+        } else {
+          throw uploadErr;
+        }
+      }
+    } finally {
+      // Clean up temp file regardless of upload outcome
+      try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { }
+    }
 
     // 🔹 Step 4: Save song in DB
     const song = new Song({
