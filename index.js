@@ -187,7 +187,8 @@ app.post("/yt-upload", async (req, res) => {
     res.json({ success: true, song, playlist });
   } catch (e) {
     console.error("YouTube download error:", e);
-    res.status(500).json({ error: "Download failed" });
+    // Include the original error message to aid debugging (non-sensitive)
+    res.status(500).json({ error: "Download failed", message: e && (e.message || String(e)) });
   }
 });
 
