@@ -87,12 +87,15 @@ app.post("/yt-upload", async (req, res) => {
 
     // resilient download: try a sequence of formats and flags that help on Render
     const downloadOptionsList = [
-      // preferred: best audio
-      { output: filePath, format: "bestaudio", cookies: process.env.YT_COOKIES_PATH || undefined },
-      // fallback: bestaudio with ffmpeg conversion to webm container
-      { output: filePath, format: "bestaudio[ext=webm]/bestaudio/best", cookies: process.env.YT_COOKIES_PATH || undefined },
-      // last resort: allow unplayable/formats and no-playlist
-      { output: filePath, format: "bestaudio/best", allow_unplayable_formats: true, no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
+      // preferred: best audio (no playlist)
+      { output: filePath, format: "bestaudio", no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
+      // fallback: bestaudio with ffmpeg conversion to webm container (no playlist)
+      { output: filePath, format: "bestaudio[ext=webm]/bestaudio/best", no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
+      // last resort: bestaudio/best (no playlist). Note: don't pass unknown flags like
+      // --allow_unplayable_formats here because some yt-dlp binaries (or wrappers)
+      // may not support them and will exit with error. If you control the runtime,
+      // consider updating yt-dlp to a newer version instead.
+      { output: filePath, format: "bestaudio/best", no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
     ];
 
     console.log("Downloading with yt-dlp (resilient mode)...");
