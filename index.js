@@ -9,7 +9,11 @@ import mongoose from "mongoose";
 import Playlist from "./models/Playlist.js";
 import Song from "./models/Song.js";
 import dotenv from "dotenv";
-import ytdlp from "yt-dlp-exec";   // ✅ use yt-dlp-exec
+import ytdlp from "yt-dlp-exec";   // ✅ use yt-dlp-exec (kept for capability detection)
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileP = promisify(execFile);
+import os from 'os';
 
 dotenv.config();
 
@@ -21,6 +25,108 @@ app.use(cors());
 app.use(express.json());
 // Serve minimal UI from public/
 app.use(express.static(path.join(__dirname, "public")));
+
+// --- Detect yt-dlp binary capabilities once at startup ---
+let ytdlpCapabilities = {
+  version: null,
+  helpText: null,
+  flags: {},
+};
+
+async function detectYtDlpCapabilities() {
+  try {
+    // --version is quick and reliable
+    const version = await ytdlp("--version");
+    // --help may be large but lets us detect supported flags
+    let helpText = "";
+    try {
+      helpText = await ytdlp("--help");
+    } catch (e) {
+      // Some wrappers/bundles may print help to stderr — try to read stderr if available
+      helpText = (e && (e.stderr || e.stdout)) || String(e);
+    }
+
+    ytdlpCapabilities.version = (version && String(version).trim()) || null;
+    ytdlpCapabilities.helpText = String(helpText || "");
+
+    const ht = ytdlpCapabilities.helpText.toLowerCase();
+    // detect a few flags we might want to conditionally pass
+    ytdlpCapabilities.flags.no_playlist = ht.includes("--no_playlist") || ht.includes("--no-playlist");
+    ytdlpCapabilities.flags.allow_unplayable_formats = ht.includes("--allow_unplayable_formats") || ht.includes("--allow-unplayable-formats") || ht.includes("allow unplayable formats");
+
+    console.log("Detected yt-dlp version:", ytdlpCapabilities.version);
+    console.log("Detected yt-dlp flags:", ytdlpCapabilities.flags);
+  } catch (e) {
+    console.warn("Could not detect yt-dlp capabilities:", e && (e.message || e));
+    // leave defaults (empty)
+  }
+}
+
+// Kick off detection but don't await it here so startup is fast; detection will
+// complete before first download in normal cases. We still call it again in
+// request flow if not ready.
+detectYtDlpCapabilities().catch(() => {});
+
+// Helper: run the bundled yt-dlp binary directly to avoid option-mapping
+// performed by wrappers. This ensures we pass only the exact CLI args we want.
+function getYtDlpBinaryPath() {
+  // node_modules/yt-dlp-exec/bin/yt-dlp(.exe on Windows)
+  const binName = os.platform().startsWith('win') ? 'yt-dlp.exe' : 'yt-dlp';
+  return path.join(__dirname, 'node_modules', 'yt-dlp-exec', 'bin', binName);
+}
+
+async function runYtDlpCli(url, { output, format, cookies, extraArgs } = {}) {
+  const bin = getYtDlpBinaryPath();
+  const args = [];
+  // URL first
+  args.push(url);
+  if (output) {
+    args.push('--output', output);
+  }
+  if (format) {
+    args.push('--format', format);
+  }
+  if (cookies) {
+    args.push('--cookies', cookies);
+  }
+  // append any additional raw args (array of strings)
+  if (Array.isArray(extraArgs) && extraArgs.length) args.push(...extraArgs);
+  // safe defaults
+  args.push('--no-warnings');
+
+  console.log('Running yt-dlp binary:', bin, args.join(' '));
+  // execFile returns { stdout, stderr }
+  const res = await execFileP(bin, args);
+  return res;
+}
+
+// List available formats for a URL (returns stdout+stderr)
+async function listAvailableFormats(url, cookies) {
+  const bin = getYtDlpBinaryPath();
+  const args = [url, '--list-formats'];
+  if (cookies) args.push('--cookies', cookies);
+  args.push('--no-warnings');
+  console.log('Listing formats via yt-dlp:', bin, args.join(' '));
+  try {
+    const res = await execFileP(bin, args);
+    return String((res && (res.stdout || '')) + (res && res.stderr || ''));
+  } catch (e) {
+    // execFile throws on non-zero exit; still return whatever output we have
+    return String((e && (e.stdout || '')) || (e && e.stderr) || String(e));
+  }
+}
+
+// Parse yt-dlp --list-formats output and return array of audio-only format ids (strings)
+function parseAudioFormatIds(listFormatsOutput) {
+  const lines = String(listFormatsOutput || '').split(/\r?\n/);
+  const audioIds = [];
+  for (const line of lines) {
+    // common format: "    251          webm       audio only  opus @160k" or "140           m4a        audio only"
+    const m = line.match(/^\s*(\d+)\s+\S+\s+audio only/i);
+    if (m) audioIds.push(m[1]);
+  }
+  return audioIds;
+}
 
 // --- MongoDB connection ---
 mongoose.connect(process.env.MONGO_URI, {
@@ -86,17 +192,30 @@ app.post("/yt-upload", async (req, res) => {
     const filePath = path.join(__dirname, `yt-song-${Date.now()}.webm`);
 
     // resilient download: try a sequence of formats and flags that help on Render
-    const downloadOptionsList = [
-      // preferred: best audio (no playlist)
-      { output: filePath, format: "bestaudio", no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
-      // fallback: bestaudio with ffmpeg conversion to webm container (no playlist)
-      { output: filePath, format: "bestaudio[ext=webm]/bestaudio/best", no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
-      // last resort: bestaudio/best (no playlist). Note: don't pass unknown flags like
-      // --allow_unplayable_formats here because some yt-dlp binaries (or wrappers)
-      // may not support them and will exit with error. If you control the runtime,
-      // consider updating yt-dlp to a newer version instead.
-      { output: filePath, format: "bestaudio/best", no_playlist: true, cookies: process.env.YT_COOKIES_PATH || undefined },
+    let downloadOptionsList = [
+      // preferred: best audio
+      { output: filePath, format: "bestaudio", cookies: process.env.YT_COOKIES_PATH || undefined },
+      // fallback: bestaudio with ffmpeg conversion to webm container
+      { output: filePath, format: "bestaudio[ext=webm]/bestaudio/best", cookies: process.env.YT_COOKIES_PATH || undefined },
+      // last resort: bestaudio/best
+      { output: filePath, format: "bestaudio/best", cookies: process.env.YT_COOKIES_PATH || undefined },
     ];
+
+    // Try to list formats and prefer a concrete audio-only format id if available
+    try {
+      const lf = await listAvailableFormats(url, process.env.YT_COOKIES_PATH || undefined);
+      const audioIds = parseAudioFormatIds(lf);
+      if (audioIds && audioIds.length) {
+        // prefer the first detected audio-only numeric format id
+        const fmt = audioIds[0];
+        downloadOptionsList.unshift({ output: filePath, format: fmt, cookies: process.env.YT_COOKIES_PATH || undefined });
+        console.log('Auto-selected audio-only format id for download fallback:', fmt);
+      } else {
+        console.log('No explicit audio-only numeric formats found in --list-formats output');
+      }
+    } catch (e) {
+      console.warn('Could not list formats, proceeding with defaults:', e && (e.message || e));
+    }
 
     console.log("Downloading with yt-dlp (resilient mode)...");
     let downloaded = false;
@@ -104,11 +223,33 @@ app.post("/yt-upload", async (req, res) => {
 
     for (const opts of downloadOptionsList) {
       try {
-        // build args for yt-dlp-exec; pass unknown boolean flags as true
-        const execOpts = { ...opts };
-        // log which format we're trying
-        console.log("Trying yt-dlp with format:", execOpts.format || "default");
-        await ytdlp(url, execOpts);
+        // ensure capabilities were detected (best-effort). If detection hasn't
+        // completed yet, run it synchronously so we don't pass unsupported flags.
+        if (!ytdlpCapabilities.helpText) {
+          try { await detectYtDlpCapabilities(); } catch (e) { }
+        }
+
+        // build args for yt-dlp-exec. Deliberately avoid adding boolean flags
+        // like `no_playlist` or `allow_unplayable_formats` which may be named
+        // differently in the underlying binary/wrapper and cause an immediate
+        // exit with "no such option". We only pass: output, format, cookies.
+        const execOpts = { output: opts.output, format: opts.format, cookies: opts.cookies };
+        // log which format we're trying and the exact options sent to ytdlp
+  console.log("Trying yt-dlp with format:", execOpts.format || "default");
+  console.log("ytdlp exec options:", execOpts);
+        // Use the direct binary invocation to ensure we control the exact CLI args
+        try {
+          await runYtDlpCli(url, execOpts);
+        } catch (innerErr) {
+          // If we see HLS-specific error about data blocks, retry with HLS ffmpeg prefs
+          const stderr = (innerErr && (innerErr.stderr || innerErr.stdout)) || String(innerErr);
+          if (String(stderr).includes('Did not get any data blocks') || String(stderr).toLowerCase().includes('did not get any data blocks')) {
+            console.log('Detected HLS data block error — retrying download with HLS/ffmpeg flags');
+            await runYtDlpCli(url, { ...execOpts, extraArgs: ['--hls-prefer-ffmpeg', '--hls-use-mpegts'] });
+          } else {
+            throw innerErr;
+          }
+        }
         if (fs.existsSync(filePath)) {
           console.log("Download complete:", filePath);
           downloaded = true;
