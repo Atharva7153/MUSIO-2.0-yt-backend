@@ -14,6 +14,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileP = promisify(execFile);
 import os from 'os';
+import { accessSync } from 'fs';
 
 dotenv.config();
 
@@ -270,16 +271,52 @@ app.post("/yt-upload", async (req, res) => {
 
     // 🔹 Step 3: Upload audio to Cloudinary (resilient - fallback to chunked upload_large on 413)
     let uploadRes;
-    try {
-      const stats = fs.statSync(filePath);
-      console.log(`Uploading file to Cloudinary: ${filePath} (${stats.size} bytes)`);
-
+    // If ffmpeg exists, transcode to mp3 for widest browser compatibility
+    const mp3Path = filePath.replace(/\.[^.]+$/, ".mp3");
+    let uploadFilePath = filePath; // actual file we will upload
+    async function transcodeToMp3(input, output) {
       try {
-        uploadRes = await cloudinary.uploader.upload(filePath, {
-          resource_type: "video",
-          folder: "songs",
-        });
-      } catch (uploadErr) {
+        // Check ffmpeg exists on PATH by trying to run `ffmpeg -version`
+        await execFileP('ffmpeg', ['-version']);
+      } catch (e) {
+        console.warn('ffmpeg not found on PATH; skipping transcode to mp3');
+        throw new Error('ffmpeg-not-found');
+      }
+      console.log('Transcoding to mp3:', input, '->', output);
+      // -y overwrite, -i input, -vn no video, -ab bitrate, -ar sample rate
+      await execFileP('ffmpeg', ['-y', '-i', input, '-vn', '-ab', '192k', '-ar', '44100', '-f', 'mp3', output]);
+      return output;
+    }
+      try {
+        // Attempt transcode (best-effort). If it succeeds we'll upload MP3.
+        try {
+          await transcodeToMp3(filePath, mp3Path);
+          uploadFilePath = mp3Path;
+        } catch (tErr) {
+          if (String(tErr.message || '').includes('ffmpeg-not-found')) {
+            // Skip, will upload original
+          } else {
+            console.warn('Transcode to mp3 failed; will upload original file:', tErr && (tErr.message || tErr));
+          }
+        }
+
+        const stats = fs.statSync(uploadFilePath);
+        console.log(`Uploading file to Cloudinary: ${uploadFilePath} (${stats.size} bytes)`);
+
+        try {
+          // Choose resource_type based on file extension to avoid Cloudinary
+          // auto-transcoding audio to MP4/TS. For audio files (mp3, webm,
+          // wav, m4a) prefer 'raw' so Cloudinary stores them as-is and
+          // serves the correct content-type. For other files fall back to
+          // 'video'.
+          const ext = path.extname(uploadFilePath || '').toLowerCase();
+          const audioExts = new Set(['.mp3', '.webm', '.wav', '.m4a', '.aac', '.flac', '.ogg']);
+          const resourceType = audioExts.has(ext) ? 'raw' : 'video';
+          uploadRes = await cloudinary.uploader.upload(uploadFilePath, {
+            resource_type: resourceType,
+            folder: "songs",
+          });
+        } catch (uploadErr) {
         // Detect 413 (Request Entity Too Large) or UnexpectedResponse with http_code 413
         const code = uploadErr && (uploadErr.http_code || (uploadErr.statusCode || uploadErr.status));
         const is413 = code === 413 || (uploadErr && typeof uploadErr === 'object' && JSON.stringify(uploadErr).includes('413'));
@@ -298,9 +335,10 @@ app.post("/yt-upload", async (req, res) => {
           throw uploadErr;
         }
       }
-    } finally {
-      // Clean up temp file regardless of upload outcome
+      } finally {
+      // Clean up temp files regardless of upload outcome
       try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { }
+      try { if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path); } catch (e) { }
     }
 
     // 🔹 Step 4: Save song in DB
