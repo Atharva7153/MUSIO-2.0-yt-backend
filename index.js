@@ -174,12 +174,18 @@ app.get('/ui', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Read-only helper for UI: list playlists (no mutation)
+// Read-only helper for UI: list playlists (reads from BOTH databases and merges)
 app.get('/playlists', async (req, res) => {
   try {
-    // Use OLD database for reading existing data
-    const lists = await PlaylistOld.find().populate('songs').lean();
-    res.json(lists);
+    // Fetch from both OLD and NEW databases
+    const [oldLists, newLists] = await Promise.all([
+      PlaylistOld.find().populate('songs').lean(),
+      PlaylistNew.find().populate('songs').lean()
+    ]);
+    
+    // Merge results - NEW database takes priority
+    const allLists = [...newLists, ...oldLists];
+    res.json(allLists);
   } catch (e) {
     console.error('Failed to list playlists for UI', e);
     res.status(500).json({ error: 'Failed to list playlists' });
