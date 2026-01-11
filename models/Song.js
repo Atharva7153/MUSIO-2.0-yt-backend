@@ -7,5 +7,6 @@ const SongSchema = new mongoose.Schema({
     coverImage : {type : String},
 }, {timestamps : true})
 
-
-export default mongoose.models.Song || mongoose.model("Song", SongSchema);
+// Export the schema so it can be used with different connections
+export { SongSchema };
+export default SongSchema;

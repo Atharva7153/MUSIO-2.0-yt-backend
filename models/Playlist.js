@@ -9,4 +9,6 @@ const PlaylistSchema = new mongoose.Schema({
 
 }, {timestamps : true})
 
-export default mongoose.models.Playlist || mongoose.model("Playlist", PlaylistSchema);
+// Export the schema so it can be used with different connections
+export { PlaylistSchema };
+export default PlaylistSchema;

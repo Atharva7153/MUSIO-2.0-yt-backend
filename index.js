@@ -6,8 +6,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import mongoose from "mongoose";
-import Playlist from "./models/Playlist.js";
-import Song from "./models/Song.js";
+import PlaylistSchema from "./models/Playlist.js";
+import SongSchema from "./models/Song.js";
 import dotenv from "dotenv";
 import ytdlp from "yt-dlp-exec";   // ✅ use yt-dlp-exec (kept for capability detection)
 import { execFile } from 'child_process';
@@ -129,14 +129,30 @@ function parseAudioFormatIds(listFormatsOutput) {
   return audioIds;
 }
 
-// --- MongoDB connection ---
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
-mongoose.connection.on("connected", () =>
-  console.log("MongoDB connected (yt-server)")
+// --- MongoDB connections (DUAL SETUP) ---
+// OLD DB: For reading existing/legacy data
+const mongoOld = mongoose.createConnection(process.env.MONGO_URI_OLD);
+mongoOld.on("connected", () =>
+  console.log("MongoDB OLD connected (read-only)")
 );
+mongoOld.on("error", (err) =>
+  console.error("MongoDB OLD connection error:", err)
+);
+
+// NEW DB: For writing all new data
+const mongoNew = mongoose.createConnection(process.env.MONGO_URI_NEW);
+mongoNew.on("connected", () =>
+  console.log("MongoDB NEW connected (write operations)")
+);
+mongoNew.on("error", (err) =>
+  console.error("MongoDB NEW connection error:", err)
+);
+
+// Create models for each database
+const SongOld = mongoOld.model("Song", SongSchema);
+const PlaylistOld = mongoOld.model("Playlist", PlaylistSchema);
+const SongNew = mongoNew.model("Song", SongSchema);
+const PlaylistNew = mongoNew.model("Playlist", PlaylistSchema);
 
 // --- Cloudinary config ---
 cloudinary.config({
@@ -161,7 +177,8 @@ app.get('/ui', (req, res) => {
 // Read-only helper for UI: list playlists (no mutation)
 app.get('/playlists', async (req, res) => {
   try {
-    const lists = await Playlist.find().populate('songs').lean();
+    // Use OLD database for reading existing data
+    const lists = await PlaylistOld.find().populate('songs').lean();
     res.json(lists);
   } catch (e) {
     console.error('Failed to list playlists for UI', e);
@@ -341,8 +358,8 @@ app.post("/yt-upload", async (req, res) => {
       try { if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path); } catch (e) { }
     }
 
-    // 🔹 Step 4: Save song in DB
-    const song = new Song({
+    // 🔹 Step 4: Save song in DB (NEW database)
+    const song = new SongNew({
       title,
       artist: artist || metadata.uploader || "Unknown Artist",
       url: uploadRes.secure_url,
@@ -350,16 +367,16 @@ app.post("/yt-upload", async (req, res) => {
     });
     await song.save();
 
-    // 🔹 Step 5: Playlist logic
+    // 🔹 Step 5: Playlist logic (NEW database)
     let playlist;
     if (newPlaylistName) {
-      playlist = new Playlist({
+      playlist = new PlaylistNew({
         name: newPlaylistName,
         songs: [song._id],
       });
       await playlist.save();
     } else if (playlistId) {
-      playlist = await Playlist.findById(playlistId);
+      playlist = await PlaylistNew.findById(playlistId);
       if (playlist) {
         playlist.songs.push(song._id);
         await playlist.save();
